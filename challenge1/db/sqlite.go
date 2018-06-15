@@ -36,8 +36,11 @@ func (s *SQLite) Insert(digest *Digest, msg string) error {
   // Insert into the sqlite database. Unique constraint errors are ignored because the digest is already in the database
   // so to the user it is the same as a successful insert.
   _, err := s.conn.Exec("INSERT INTO digests(digest, message) VALUES(?, ?);", digest.Hex, msg)
-  if err != nil && err != sqlite3.ErrConstraintUnique {
-    return err
+  if err != nil {
+    sqlite3Err := err.(sqlite3.Error)
+    if sqlite3Err.Code != sqlite3.ErrConstraint {
+      return err
+    }
   }
   return nil
 }
