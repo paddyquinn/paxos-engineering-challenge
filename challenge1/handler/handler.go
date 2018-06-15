@@ -2,58 +2,80 @@ package handler
 
 import (
   "crypto/sha256"
+  "database/sql"
   "encoding/json"
   "encoding/hex"
   "io"
   "net/http"
 
   "github.com/gin-gonic/gin"
+  "github.com/paddyquinn/paxos-engineering-challenge/challenge1/db"
 )
 
 type Handler struct {
-  // TODO: change this to a database
-  db map[string]string
+  db *db.SQLite
 }
 
-func NewHandler() *Handler {
-  return &Handler{db: make(map[string]string)}
+func NewHandler() (*Handler, error) {
+  db, err := db.NewSQLite()
+  if err != nil {
+    return nil, err
+  }
+  return &Handler{db: db}, nil
 }
 
 func (h *Handler) Post(ctx *gin.Context) {
-  msg := &model{}
+  // Decode the POST data into a
+  msg := &db.Message{}
   decoder := json.NewDecoder(ctx.Request.Body)
   err := decoder.Decode(msg)
   if err != nil {
+    // Default to an internal server error if the decoding fails.
     statusCode := http.StatusInternalServerError
     errMsg := err.Error()
+
+    // If the decoding fails with an EOF error, no message was passed so return a bad request error code.
     if err == io.EOF {
       statusCode = http.StatusBadRequest
       errMsg = "Missing message data"
     }
-    // TODO: should this be a model?
-    ctx.JSON(statusCode, map[string]string{"err_msg": errMsg})
+
+    ctx.JSON(statusCode, db.Error{Msg: errMsg})
     return
   }
-  digest := sha256.Sum256([]byte(msg.Message))
-  hexDigest := hex.EncodeToString(digest[:])
-  h.db[hexDigest] = msg.Message
-  // TODO: should this be a model?
-  ctx.JSON(http.StatusOK, map[string]string{"digest": hexDigest})
+
+  // Calculate the digest and encode it as a hex string.
+  digest := sha256.Sum256([]byte(msg.Text))
+  hexDigest := &db.Digest{Hex: hex.EncodeToString(digest[:])}
+
+  // Insert into the database.
+  err = h.db.Insert(hexDigest, msg.Text)
+  if err != nil {
+    ctx.JSON(http.StatusInternalServerError, db.Error{Msg: err.Error()})
+    return
+  }
+
+  ctx.JSON(http.StatusOK, hexDigest)
 }
 
 func (h *Handler) Get(ctx *gin.Context) {
+  // Get the digest from the URL and query the database for it.
   digest := ctx.Param("digest")
-  msg, found := h.db[digest]
-  if !found {
-    // TODO: should this be a model?
-    ctx.JSON(http.StatusNotFound, map[string]string{"err_msg": "Message not found"})
+  msg, err := h.db.Get(digest)
+  if err != nil {
+    // Default to an internal server error if the database query fails.
+    statusCode := http.StatusInternalServerError
+    errMsg := err.Error()
+
+    // If no rows were found for the message return a 404 error.
+    if err == sql.ErrNoRows {
+      statusCode = http.StatusNotFound
+      errMsg = "Message not found"
+    }
+
+    ctx.JSON(statusCode, db.Error{Msg: errMsg})
     return
   }
 
-  ctx.JSON(http.StatusOK, map[string]string{"message": msg})
-}
-
-// TODO: move this to its own package when we use an actual database
-type model struct {
-  Message string `json:"message"`
+  ctx.JSON(http.StatusOK, msg)
 }
